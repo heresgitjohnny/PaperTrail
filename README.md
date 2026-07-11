@@ -20,7 +20,7 @@ No manual data entry, no spreadsheet wrangling.
 
 ## Architecture
 
-![Architecture diagram](./docs/architecture.png)
+![Architecture diagram](./docs/papertrailarchitecture.png)
 
 ```
 User → CloudFront → S3 (static frontend)
