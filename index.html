@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="theme-color" content="#1C1B19">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Paper Trail — Receipt Tracker</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧾</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#FAF7F0;
+    --paper-card:#FFFFFF;
+    --ink:#1C1B19;
+    --ink-muted:#6F6A5E;
+    --line:#E4DFD1;
+    --stamp:#B23A2E;
+    --stamp-ink:#FFF6F4;
+    --ok:#3F6B5C;
+    --ok-ink:#EFF6F3;
+    --radius:14px;
+    --safe-b: env(safe-area-inset-bottom, 0px);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'IBM Plex Sans',system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    min-height:100vh;
+  }
+  .mono{font-family:'Space Mono',monospace;}
+  #shell{
+    max-width:480px;
+    margin:0 auto;
+    min-height:100vh;
+    display:flex;
+    flex-direction:column;
+    background:var(--paper);
+    box-shadow:0 0 40px rgba(0,0,0,0.06);
+  }
+
+  /* ---- Header ---- */
+  header{
+    padding:20px 20px 14px;
+    display:flex;
+    align-items:baseline;
+    justify-content:space-between;
+    border-bottom:1px dashed var(--line);
+  }
+  header .brand{
+    font-family:'Space Mono',monospace;
+    font-weight:700;
+    font-size:20px;
+    letter-spacing:0.5px;
+  }
+  header .brand small{
+    display:block;
+    font-family:'IBM Plex Sans',sans-serif;
+    font-weight:400;
+    font-size:11px;
+    color:var(--ink-muted);
+    letter-spacing:1.5px;
+    text-transform:uppercase;
+    margin-top:2px;
+  }
+  #signout{
+    background:none;border:none;color:var(--ink-muted);
+    font-size:13px;text-decoration:underline;cursor:pointer;padding:8px;
+  }
+
+  /* ---- Login screen ---- */
+  #login-screen{
+    flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    padding:32px;text-align:center;gap:18px;
+  }
+  #login-screen .glyph{font-size:52px;}
+  #login-screen h1{font-family:'Space Mono',monospace;font-size:22px;margin:0;}
+  #login-screen p{color:var(--ink-muted);font-size:14px;line-height:1.5;max-width:320px;margin:0;}
+
+  /* ---- Buttons ---- */
+  .btn{
+    font-family:'IBM Plex Sans',sans-serif;
+    font-weight:600;
+    font-size:15px;
+    border-radius:10px;
+    border:none;
+    padding:14px 20px;
+    min-height:48px;
+    cursor:pointer;
+    transition:transform .08s ease;
+  }
+  .btn:active{transform:scale(0.97) rotate(-0.5deg);}
+  .btn-primary{background:var(--ink);color:var(--paper);}
+  .btn-stamp{background:var(--stamp);color:var(--stamp-ink);}
+  .btn-outline{background:transparent;color:var(--ink);border:1.5px solid var(--ink);}
+  .btn-block{width:100%;}
+  .btn:disabled{opacity:0.45;cursor:not-allowed;}
+
+  /* ---- Setup banner ---- */
+  #setup-banner{
+    margin:16px;padding:14px 16px;border:1.5px dashed var(--stamp);border-radius:var(--radius);
+    background:var(--stamp-ink);color:var(--ink);font-size:13px;line-height:1.5;display:none;
+  }
+  #setup-banner strong{display:block;margin-bottom:4px;font-family:'Space Mono',monospace;}
+  #setup-banner code{background:rgba(0,0,0,0.06);padding:1px 5px;border-radius:4px;font-size:12px;}
+
+  /* ---- App shell ---- */
+  #app-shell{flex:1;display:none;flex-direction:column;}
+  main{flex:1;overflow-y:auto;padding:16px 16px calc(90px + var(--safe-b));}
+  .view{display:none;}
+  .view.active{display:block;}
+
+  h2.section-title{
+    font-family:'Space Mono',monospace;font-size:13px;letter-spacing:1.5px;text-transform:uppercase;
+    color:var(--ink-muted);margin:4px 0 12px;
+  }
+
+  /* ---- Receipt card ---- */
+  .receipt-card{
+    background:var(--paper-card);
+    border-radius:var(--radius);
+    padding:18px 18px 14px;
+    box-shadow:0 2px 10px rgba(28,27,25,0.06);
+    margin-bottom:16px;
+    position:relative;
+  }
+  .receipt-card.torn::after{
+    content:"";
+    position:absolute;left:0;right:0;bottom:-7px;height:14px;
+    background:
+      linear-gradient(135deg, var(--paper-card) 50%, transparent 50%) 0 0/14px 14px repeat-x,
+      linear-gradient(-135deg, var(--paper-card) 50%, transparent 50%) 0 0/14px 14px repeat-x;
+    background-position:0 0, 7px 0;
+  }
+
+  /* ---- Upload view ---- */
+  .upload-actions{display:flex;flex-direction:column;gap:10px;}
+  #file-input,#camera-input{display:none;}
+  .queue-item{
+    display:flex;align-items:center;gap:10px;
+    padding:10px 0;border-bottom:1px dotted var(--line);
+    font-size:13px;
+  }
+  .queue-item:last-child{border-bottom:none;}
+  .queue-item .dot{width:8px;height:8px;border-radius:50%;background:var(--stamp);flex:none;animation:pulse 1.2s infinite;}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
+  .queue-item .name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .queue-item .status{color:var(--ink-muted);font-family:'Space Mono',monospace;font-size:11px;}
+
+  /* ---- Expense rows ---- */
+  .period-switch{display:flex;gap:8px;margin-bottom:14px;}
+  .period-switch button{
+    flex:1;background:transparent;border:1.5px solid var(--line);border-radius:10px;
+    padding:9px;font-size:13px;font-weight:600;color:var(--ink-muted);cursor:pointer;
+  }
+  .period-switch button.active{border-color:var(--ink);color:var(--ink);background:var(--paper-card);}
+  .expense-row{display:flex;align-items:baseline;gap:8px;padding:11px 0;border-bottom:1px dotted var(--line);}
+  .expense-row:last-child{border-bottom:none;}
+  .expense-row .date{font-family:'Space Mono',monospace;font-size:11px;color:var(--ink-muted);width:52px;flex:none;}
+  .expense-row .info{flex:1;min-width:0;}
+  .expense-row .merchant{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .expense-row .category{font-size:11px;color:var(--ink-muted);text-transform:uppercase;letter-spacing:0.5px;}
+  .expense-row .amount{font-family:'Space Mono',monospace;font-weight:700;font-size:14px;flex:none;}
+  .expense-total{display:flex;justify-content:space-between;padding-top:14px;margin-top:6px;
+    border-top:2px solid var(--ink);font-family:'Space Mono',monospace;font-weight:700;font-size:15px;}
+  .empty-state{padding:30px 10px;text-align:center;color:var(--ink-muted);font-size:13px;line-height:1.6;}
+  .empty-state .glyph{font-size:30px;display:block;margin-bottom:8px;}
+
+  /* ---- Reports view ---- */
+  .report-primary{display:flex;flex-direction:column;gap:12px;margin-bottom:18px;}
+  .report-primary .btn{display:flex;flex-direction:column;align-items:flex-start;gap:2px;}
+  .report-primary .btn .big{font-size:16px;}
+  .report-primary .btn .small{font-size:12px;font-weight:400;opacity:0.8;}
+  details.custom-range{border:1.5px dashed var(--line);border-radius:var(--radius);padding:14px 16px;}
+  details.custom-range summary{cursor:pointer;font-weight:600;font-size:13px;color:var(--ink-muted);}
+  .date-row{display:flex;gap:10px;margin-top:12px;}
+  .date-row label{flex:1;font-size:12px;color:var(--ink-muted);display:flex;flex-direction:column;gap:4px;}
+  .date-row input{
+    font-family:'Space Mono',monospace;padding:9px;border:1.5px solid var(--line);border-radius:8px;font-size:13px;
+  }
+
+  /* ---- Bottom nav ---- */
+  nav.tabbar{
+    position:fixed;bottom:0;left:50%;transform:translateX(-50%);
+    width:100%;max-width:480px;
+    background:var(--paper-card);
+    border-top:1px solid var(--line);
+    display:flex;
+    padding-bottom:var(--safe-b);
+  }
+  nav.tabbar button{
+    flex:1;background:none;border:none;padding:12px 4px 10px;cursor:pointer;
+    display:flex;flex-direction:column;align-items:center;gap:4px;color:var(--ink-muted);
+    min-height:56px;
+  }
+  nav.tabbar button svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;}
+  nav.tabbar button span{font-size:10px;font-weight:600;letter-spacing:0.4px;text-transform:uppercase;}
+  nav.tabbar button.active{color:var(--stamp);}
+
+  #toast{
+    position:fixed;left:50%;bottom:calc(80px + var(--safe-b));transform:translateX(-50%);
+    background:var(--ink);color:var(--paper);padding:10px 18px;border-radius:30px;font-size:13px;
+    opacity:0;pointer-events:none;transition:opacity .25s ease, transform .25s ease;z-index:50;
+  }
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(-4px);}
+</style>
+</head>
+<body>
+
+<div id="shell">
+
+  <div id="setup-banner">
+    <strong>Setup needed</strong>
+    Open this file and fill in the <code>CONFIG</code> object at the top of the script with the
+    values from your CloudFormation stack outputs (UserPoolClientId, CognitoHostedUiDomain, ApiEndpoint),
+    then re-upload it to the FrontendBucket.
+  </div>
+
+  <header>
+    <div class="brand">Paper Trail<small>Receipt Tracker</small></div>
+    <button id="signout" type="button" style="display:none;">Sign out</button>
+  </header>
+
+  <div id="login-screen">
+    <div class="glyph">🧾</div>
+    <h1>Keep every receipt.<br>Lose no time.</h1>
+    <p>Sign in to snap a receipt, and let it turn itself into a categorized expense — ready for month-end or tax time.</p>
+    <button class="btn btn-stamp btn-block" id="login-btn" type="button" style="max-width:260px;">Sign in</button>
+  </div>
+
+  <div id="app-shell">
+    <main>
+
+      <!-- UPLOAD -->
+      <section class="view active" id="view-upload">
+        <h2 class="section-title">Add a receipt</h2>
+        <div class="receipt-card">
+          <div class="upload-actions">
+            <button class="btn btn-primary btn-block" id="take-photo-btn" type="button">📷 Take a photo</button>
+            <button class="btn btn-outline btn-block" id="choose-file-btn" type="button">Choose a file</button>
+          </div>
+          <input type="file" id="camera-input" accept="image/*" capture="environment">
+          <input type="file" id="file-input" accept="image/*,application/pdf">
+        </div>
+
+        <h2 class="section-title">Recently added</h2>
+        <div class="receipt-card">
+          <div id="upload-queue">
+            <div class="empty-state"><span class="glyph">🗂️</span>Nothing uploaded yet this session.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- EXPENSES -->
+      <section class="view" id="view-expenses">
+        <h2 class="section-title">Expenses</h2>
+        <div class="period-switch">
+          <button data-period="month" class="active">This month</button>
+          <button data-period="all">All time</button>
+        </div>
+        <div class="receipt-card torn">
+          <div id="expense-list">
+            <div class="empty-state"><span class="glyph">⏳</span>Loading…</div>
+          </div>
+          <div class="expense-total" id="expense-total" style="display:none;">
+            <span>Total</span><span id="expense-total-amount">£0.00</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- REPORTS -->
+      <section class="view" id="view-reports">
+        <h2 class="section-title">Download a report</h2>
+        <div class="report-primary">
+          <button class="btn btn-primary btn-block" id="report-month-btn" type="button">
+            <span class="big">This month</span><span class="small">CSV, current calendar month</span>
+          </button>
+          <button class="btn btn-primary btn-block" id="report-fy-btn" type="button">
+            <span class="big">This financial year</span><span class="small">CSV, current FY to date</span>
+          </button>
+        </div>
+        <details class="custom-range">
+          <summary>Custom date range</summary>
+          <div class="date-row">
+            <label>From<input type="date" id="report-start"></label>
+            <label>To<input type="date" id="report-end"></label>
+          </div>
+          <button class="btn btn-outline btn-block" id="report-custom-btn" type="button" style="margin-top:12px;">Download CSV</button>
+        </details>
+      </section>
+
+    </main>
+
+    <nav class="tabbar">
+      <button data-tab="upload" class="active" type="button">
+        <svg viewBox="0 0 24 24"><path d="M12 4v12M6 10l6-6 6 6M4 20h16" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Upload</span>
+      </button>
+      <button data-tab="expenses" type="button">
+        <svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="1"/><path d="M8 8h8M8 12h8M8 16h5" stroke-linecap="round"/></svg>
+        <span>Expenses</span>
+      </button>
+      <button data-tab="reports" type="button">
+        <svg viewBox="0 0 24 24"><path d="M4 19V9M12 19V5M20 19v-7" stroke-linecap="round"/></svg>
+        <span>Reports</span>
+      </button>
+    </nav>
+  </div>
+
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* =========================================================================
+   CONFIG — fill these in from your CloudFormation stack Outputs, then
+   re-upload this file to the FrontendBucket (and invalidate CloudFront).
+   ========================================================================= */
+const CONFIG = {
+  userPoolClientId: 'REPLACE_ME_USER_POOL_CLIENT_ID',
+  cognitoHostedUiDomain: 'REPLACE_ME_COGNITO_HOSTED_UI_DOMAIN', // e.g. https://your-prefix.auth.eu-west-1.amazoncognito.com
+  apiEndpoint: 'REPLACE_ME_API_ENDPOINT',                       // e.g. https://abc123.execute-api.eu-west-1.amazonaws.com
+  financialYearStartMonth: 4                                    // must match the FinancialYearStartMonth stack parameter
+};
+
+function isConfigured(){
+  return !Object.values(CONFIG).some(v => typeof v === 'string' && v.startsWith('REPLACE_ME'));
+}
+
+/* ---------------------------- PKCE helpers ---------------------------- */
+function base64url(bytes){
+  return btoa(String.fromCharCode(...new Uint8Array(bytes)))
+    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function randomVerifier(len=64){
+  const arr = new Uint8Array(len);
+  crypto.getRandomValues(arr);
+  return base64url(arr).slice(0, len);
+}
+async function sha256base64url(input){
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
+  return base64url(digest);
+}
+function redirectUri(){
+  return window.location.origin + '/callback';
+}
+
+/* ------------------------------- Auth --------------------------------- */
+function saveTokens(t){
+  const expiresAt = Date.now() + (t.expires_in * 1000);
+  sessionStorage.setItem('pt_tokens', JSON.stringify({
+    idToken: t.id_token, accessToken: t.access_token, refreshToken: t.refresh_token, expiresAt
+  }));
+}
+function getTokens(){
+  try {
+    const t = JSON.parse(sessionStorage.getItem('pt_tokens'));
+    if (!t || Date.now() >= t.expiresAt) return null;
+    return t;
+  } catch { return null; }
+}
+function clearTokens(){ sessionStorage.removeItem('pt_tokens'); }
+
+async function login(){
+  const verifier = randomVerifier();
+  sessionStorage.setItem('pt_verifier', verifier);
+  const state = randomVerifier(16);
+  sessionStorage.setItem('pt_state', state);
+  const challenge = await sha256base64url(verifier);
+  const url = `${CONFIG.cognitoHostedUiDomain}/oauth2/authorize?` + new URLSearchParams({
+    response_type: 'code',
+    client_id: CONFIG.userPoolClientId,
+    redirect_uri: redirectUri(),
+    scope: 'openid email profile',
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    state
+  });
+  window.location.href = url;
+}
+
+function logout(){
+  clearTokens();
+  const url = `${CONFIG.cognitoHostedUiDomain}/logout?` + new URLSearchParams({
+    client_id: CONFIG.userPoolClientId,
+    logout_uri: window.location.origin + '/'
+  });
+  window.location.href = url;
+}
+
+async function handleCallbackIfPresent(){
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  const state = params.get('state');
+  if (!code) return;
+
+  const expectedState = sessionStorage.getItem('pt_state');
+  const verifier = sessionStorage.getItem('pt_verifier');
+  history.replaceState(null, '', window.location.origin + '/');
+  if (!verifier || state !== expectedState) {
+    showToast('Sign-in could not be verified. Please try again.');
+    return;
+  }
+
+  const resp = await fetch(`${CONFIG.cognitoHostedUiDomain}/oauth2/token`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: CONFIG.userPoolClientId,
+      code,
+      redirect_uri: redirectUri(),
+      code_verifier: verifier
+    })
+  });
+  if (!resp.ok) {
+    showToast('Sign-in failed. Please try again.');
+    return;
+  }
+  saveTokens(await resp.json());
+}
+
+/* ------------------------------- API ----------------------------------- */
+async function apiFetch(path, options = {}){
+  const t = getTokens();
+  if (!t) { logout(); return null; }
+  const resp = await fetch(CONFIG.apiEndpoint + path, {
+    method: options.method || 'GET',
+    headers: {
+      Authorization: `Bearer ${t.idToken}`,
+      ...(options.body ? { 'Content-Type': 'application/json' } : {})
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  });
+  if (resp.status === 401) { logout(); return null; }
+  return resp;
+}
+
+/* ------------------------------ UI utils -------------------------------- */
+let toastTimer;
+function showToast(msg){
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+}
+function fmtMoney(n, currency){
+  const num = Number(n || 0);
+  const symbol = currency === 'USD' ? '$' : currency === 'EUR' ? '€' : '£';
+  return symbol + num.toFixed(2);
+}
+function extFromMime(mime){
+  if (mime === 'image/png') return 'png';
+  if (mime === 'image/jpeg') return 'jpg';
+  if (mime === 'application/pdf') return 'pdf';
+  return 'jpg';
+}
+function fileToBase64(file){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]); // strip the "data:...;base64," prefix
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+/* ------------------------------ Tabs ------------------------------------ */
+function switchTab(name){
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
+  document.querySelectorAll('nav.tabbar button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  if (name === 'expenses') loadExpenses();
+}
+document.querySelectorAll('nav.tabbar button').forEach(b => {
+  b.addEventListener('click', () => switchTab(b.dataset.tab));
+});
+
+/* ------------------------------ Upload ----------------------------------- */
+const uploadQueueEl = document.getElementById('upload-queue');
+let queueHasItems = false;
+
+function addQueueItem(name){
+  if (!queueHasItems) { uploadQueueEl.innerHTML = ''; queueHasItems = true; }
+  const row = document.createElement('div');
+  row.className = 'queue-item';
+  row.innerHTML = `<div class="dot"></div><div class="name">${name}</div><div class="status">processing</div>`;
+  uploadQueueEl.prepend(row);
+  return row;
+}
+
+async function uploadFile(file){
+  if (file.size > 5 * 1024 * 1024) { showToast('That file is too large (max 5MB).'); return; }
+  const row = addQueueItem(file.name);
+  try {
+    const ext = extFromMime(file.type);
+    const filename = file.name || `receipt.${ext}`;
+    const fileBase64 = await fileToBase64(file);
+
+    const resp = await apiFetch('/receipts', {
+      method: 'POST',
+      body: {
+        filename,
+        contentType: file.type || 'image/jpeg',
+        fileBase64
+      }
+    });
+    if (!resp || !resp.ok) throw new Error('upload failed');
+
+    row.querySelector('.status').textContent = 'uploaded';
+    row.querySelector('.dot').style.background = 'var(--ok)';
+    row.querySelector('.dot').style.animation = 'none';
+    showToast('Receipt uploaded — it will appear in Expenses shortly.');
+    setTimeout(loadExpenses, 7000);
+  } catch (err) {
+    row.querySelector('.status').textContent = 'failed';
+    row.querySelector('.dot').style.background = 'var(--stamp)';
+    row.querySelector('.dot').style.animation = 'none';
+    showToast('Upload failed. Please try again.');
+  }
+}
+
+document.getElementById('take-photo-btn').addEventListener('click', () => document.getElementById('camera-input').click());
+document.getElementById('choose-file-btn').addEventListener('click', () => document.getElementById('file-input').click());
+['camera-input','file-input'].forEach(id => {
+  document.getElementById(id).addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (file) uploadFile(file);
+    e.target.value = '';
+  });
+});
+
+/* ----------------------------- Expenses ---------------------------------- */
+let currentPeriod = 'month';
+
+function monthRange(){
+  const now = new Date();
+  const y = now.getFullYear(), m = now.getMonth();
+  const start = `${y}-${String(m+1).padStart(2,'0')}-01`;
+  const nextY = m === 11 ? y+1 : y, nextM = m === 11 ? 1 : m+2;
+  const end = `${nextY}-${String(nextM).padStart(2,'0')}-01`;
+  return { start, end };
+}
+
+async function loadExpenses(){
+  const listEl = document.getElementById('expense-list');
+  const totalEl = document.getElementById('expense-total');
+  listEl.innerHTML = '<div class="empty-state"><span class="glyph">⏳</span>Loading…</div>';
+  totalEl.style.display = 'none';
+
+  let query = '';
+  if (currentPeriod === 'month') {
+    const { start, end } = monthRange();
+    query = `?start=${start}&end=${end}`;
+  }
+  const resp = await apiFetch('/expenses' + query);
+  if (!resp || !resp.ok) { listEl.innerHTML = '<div class="empty-state">Could not load expenses.</div>'; return; }
+  const items = await resp.json();
+
+  if (!items.length) {
+    listEl.innerHTML = '<div class="empty-state"><span class="glyph">🧾</span>No receipts here yet. Add one from the Upload tab.</div>';
+    return;
+  }
+
+  items.sort((a,b) => (b.sortKey || '').localeCompare(a.sortKey || ''));
+  let total = 0, currency = 'GBP';
+  listEl.innerHTML = items.map(it => {
+    total += Number(it.amount || 0);
+    currency = it.currency || currency;
+    return `<div class="expense-row">
+      <div class="date mono">${(it.expenseDate || '').slice(5)}</div>
+      <div class="info">
+        <div class="merchant">${it.merchant || 'Unknown'}</div>
+        <div class="category">${it.category || 'Other'}</div>
+      </div>
+      <div class="amount">${fmtMoney(it.amount, it.currency)}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('expense-total-amount').textContent = fmtMoney(total, currency);
+  totalEl.style.display = 'flex';
+}
+
+document.querySelectorAll('.period-switch button').forEach(b => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('.period-switch button').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    currentPeriod = b.dataset.period;
+    loadExpenses();
+  });
+});
+
+/* ------------------------------ Reports ----------------------------------- */
+async function downloadReport(query){
+  showToast('Preparing your report…');
+  const t = getTokens();
+  if (!t) { logout(); return; }
+  const resp = await fetch(CONFIG.apiEndpoint + '/report' + query, {
+    headers: { Authorization: `Bearer ${t.idToken}` }
+  });
+  if (!resp.ok) { showToast('Could not generate the report.'); return; }
+  const disposition = resp.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="(.+)"/);
+  const filename = match ? match[1] : 'expenses.csv';
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  showToast('Report downloaded.');
+}
+
+document.getElementById('report-month-btn').addEventListener('click', () => {
+  const now = new Date();
+  const value = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+  downloadReport(`?period=month&value=${value}`);
+});
+document.getElementById('report-fy-btn').addEventListener('click', () => {
+  const now = new Date();
+  let fyStartYear = now.getFullYear();
+  if (now.getMonth() + 1 < CONFIG.financialYearStartMonth) fyStartYear -= 1;
+  downloadReport(`?period=financial_year&value=${fyStartYear}`);
+});
+document.getElementById('report-custom-btn').addEventListener('click', () => {
+  const start = document.getElementById('report-start').value;
+  const end = document.getElementById('report-end').value;
+  if (!start || !end) { showToast('Pick both a start and end date.'); return; }
+  downloadReport(`?period=custom&start=${start}&end=${end}`);
+});
+
+/* -------------------------------- Boot ------------------------------------ */
+document.getElementById('login-btn').addEventListener('click', login);
+document.getElementById('signout').addEventListener('click', logout);
+
+async function boot(){
+  if (!isConfigured()) {
+    document.getElementById('setup-banner').style.display = 'block';
+    return;
+  }
+  await handleCallbackIfPresent();
+  const authed = !!getTokens();
+  document.getElementById('login-screen').style.display = authed ? 'none' : 'flex';
+  document.getElementById('app-shell').style.display = authed ? 'flex' : 'none';
+  document.getElementById('signout').style.display = authed ? 'inline-block' : 'none';
+  if (authed) loadExpenses();
+}
+boot();
+</script>
+</body>
+</html>
