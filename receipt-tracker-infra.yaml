@@ -1,0 +1,727 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Receipt-to-Expense Tracker - serverless stack.
+  Cognito-guarded, mobile-friendly web upload -> Textract + Bedrock
+  extraction -> DynamoDB -> CSV reporting by month / financial year / custom range.
+
+  MANUAL STEPS AFTER DEPLOY (cannot be fully automated by CloudFormation):
+  1. Enable model access for the Bedrock model you set in BedrockModelId, in the Bedrock console.
+  2. Build/upload your frontend to the FrontendBucket (see FrontendBucketName output) and
+     invalidate CloudFront after each deploy.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: receipt-tracker
+    Description: Prefix used for resource names. Lowercase letters, numbers, hyphens only.
+
+  CognitoDomainPrefix:
+    Type: String
+    Description: >
+      Globally-unique prefix for the Cognito Hosted UI domain
+      (becomes https://<prefix>.auth.<region>.amazoncognito.com)
+
+  FinancialYearStartMonth:
+    Type: Number
+    Default: 4
+    MinValue: 1
+    MaxValue: 12
+    Description: Month (1-12) your financial year starts on. Default 4 = April (UK).
+
+  BedrockModelId:
+    Type: String
+    Default: anthropic.claude-3-5-sonnet-20241022-v2:0
+    Description: >
+      Bedrock model ID (or cross-region inference profile ID) used to turn
+      Textract output into structured merchant/amount/category data.
+
+Resources:
+
+  # ---------------------------------------------------------------------
+  # Cognito - guards the web frontend
+  # ---------------------------------------------------------------------
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${ProjectName}-users
+      AutoVerifiedAttributes: [email]
+      UsernameAttributes: [email]
+      Schema:
+        - Name: email
+          Required: true
+          Mutable: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 10
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomainPrefix
+      UserPoolId: !Ref UserPool
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub ${ProjectName}-web
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, profile]
+      AllowedOAuthFlowsUserPoolClient: true
+      SupportedIdentityProviders: [COGNITO]
+      CallbackURLs:
+        - !Sub https://${CloudFrontDistribution.DomainName}/callback
+        - http://localhost:3000/callback
+      LogoutURLs:
+        - !Sub https://${CloudFrontDistribution.DomainName}/
+        - http://localhost:3000/
+
+  # ---------------------------------------------------------------------
+  # DynamoDB
+  # ---------------------------------------------------------------------
+
+  ExpensesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${ProjectName}-expenses
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: sortKey
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: sortKey
+          KeyType: RANGE
+
+  # ---------------------------------------------------------------------
+  # S3 - receipts and static frontend
+  # ---------------------------------------------------------------------
+
+  ReceiptsBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: ProcessReceiptFunctionS3Permission
+    Properties:
+      BucketName: !Sub ${ProjectName}-receipts-${AWS::AccountId}-${AWS::Region}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: receipts/
+            Function: !GetAtt ProcessReceiptFunction.Arn
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${ProjectName}-frontend-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub arn:aws:s3:::${FrontendBucket}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}
+
+  # ---------------------------------------------------------------------
+  # CloudFront - fronts the static SPA
+  # ---------------------------------------------------------------------
+
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${ProjectName}-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - Id: frontend-origin
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !Ref CloudFrontOAC
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: frontend-origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # AWS managed CachingOptimized
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+  # ---------------------------------------------------------------------
+  # API Gateway (HTTP API) - Cognito JWT guarded
+  # ---------------------------------------------------------------------
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub ${ProjectName}-api
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - !Sub https://${CloudFrontDistribution.DomainName}
+          - http://localhost:3000
+        AllowMethods: [GET, POST, OPTIONS]
+        AllowHeaders: [Authorization, Content-Type]
+
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: $default
+      AutoDeploy: true
+
+  CognitoAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref HttpApi
+      AuthorizerType: JWT
+      Name: CognitoAuthorizer
+      IdentitySource: ['$request.header.Authorization']
+      JwtConfiguration:
+        Audience: [!Ref UserPoolClient]
+        Issuer: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}
+
+  # -- /receipts (upload) --
+  ReceiptUploadIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ReceiptUploadFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  ReceiptUploadRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: POST /receipts
+      AuthorizationType: JWT
+      AuthorizerId: !Ref CognitoAuthorizer
+      Target: !Sub integrations/${ReceiptUploadIntegration}
+
+  ReceiptUploadPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ReceiptUploadFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*
+
+  # -- /expenses --
+  ListExpensesIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ListExpensesFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  ListExpensesRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: GET /expenses
+      AuthorizationType: JWT
+      AuthorizerId: !Ref CognitoAuthorizer
+      Target: !Sub integrations/${ListExpensesIntegration}
+
+  ListExpensesPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ListExpensesFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*
+
+  # -- /report --
+  GenerateReportIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt GenerateReportFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  GenerateReportRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: GET /report
+      AuthorizationType: JWT
+      AuthorizerId: !Ref CognitoAuthorizer
+      Target: !Sub integrations/${GenerateReportIntegration}
+
+  GenerateReportPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GenerateReportFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*
+
+  # ---------------------------------------------------------------------
+  # Lambda execution roles
+  # ---------------------------------------------------------------------
+
+  BasicLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  ReceiptUploadRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ReceiptUploadPut
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub arn:aws:s3:::${ProjectName}-receipts-${AWS::AccountId}-${AWS::Region}/receipts/*
+
+  ProcessReceiptRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ProcessReceipt
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub arn:aws:s3:::${ProjectName}-receipts-${AWS::AccountId}-${AWS::Region}/*
+              - Effect: Allow
+                Action: textract:AnalyzeExpense
+                Resource: '*'
+              - Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource: '*'
+              - Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt ExpensesTable.Arn
+
+  ListExpensesRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: QueryExpenses
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:Query
+                Resource: !GetAtt ExpensesTable.Arn
+
+  GenerateReportRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: QueryExpensesForReport
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:Query
+                Resource: !GetAtt ExpensesTable.Arn
+
+  # ---------------------------------------------------------------------
+  # Lambda functions
+  # ---------------------------------------------------------------------
+
+  ReceiptUploadFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-receipt-upload
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ReceiptUploadRole.Arn
+      Timeout: 20
+      MemorySize: 256
+      Environment:
+        Variables:
+          RECEIPTS_BUCKET: !Sub ${ProjectName}-receipts-${AWS::AccountId}-${AWS::Region}
+      Code:
+        ZipFile: |
+          import boto3, json, os, uuid, base64
+
+          s3 = boto3.client('s3')
+          BUCKET = os.environ['RECEIPTS_BUCKET']
+          MAX_BYTES = 5 * 1024 * 1024  # keep well under the 6MB Lambda proxy payload limit
+
+          def handler(event, context):
+              claims = event['requestContext']['authorizer']['jwt']['claims']
+              user_id = claims['sub']
+
+              try:
+                  payload = json.loads(event.get('body') or '{}')
+              except json.JSONDecodeError:
+                  return _error(400, 'Request body must be JSON.')
+
+              file_b64 = payload.get('fileBase64')
+              filename = payload.get('filename', 'receipt.jpg')
+              content_type = payload.get('contentType', 'image/jpeg')
+
+              if not file_b64:
+                  return _error(400, 'fileBase64 is required.')
+
+              try:
+                  file_bytes = base64.b64decode(file_b64)
+              except Exception:
+                  return _error(400, 'fileBase64 could not be decoded.')
+
+              if len(file_bytes) > MAX_BYTES:
+                  return _error(400, 'File is too large (max 5MB).')
+
+              ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'jpg'
+              receipt_id = str(uuid.uuid4())
+              key = f"receipts/{user_id}/{receipt_id}.{ext}"
+
+              s3.put_object(Bucket=BUCKET, Key=key, Body=file_bytes, ContentType=content_type)
+
+              return {
+                  'statusCode': 200,
+                  'headers': {'Content-Type': 'application/json'},
+                  'body': json.dumps({'receiptId': receipt_id, 'key': key})
+              }
+
+          def _error(status, message):
+              return {
+                  'statusCode': status,
+                  'headers': {'Content-Type': 'application/json'},
+                  'body': json.dumps({'error': message})
+              }
+
+  ProcessReceiptFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-process-receipt
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ProcessReceiptRole.Arn
+      Timeout: 60
+      MemorySize: 512
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ExpensesTable
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+      Code:
+        ZipFile: |
+          import boto3, json, os, urllib.parse
+          from datetime import datetime, timezone
+
+          textract = boto3.client('textract')
+          bedrock = boto3.client('bedrock-runtime')
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+          MODEL_ID = os.environ['BEDROCK_MODEL_ID']
+
+          def handler(event, context):
+              for record in event['Records']:
+                  bucket = record['s3']['bucket']['name']
+                  key = urllib.parse.unquote_plus(record['s3']['object']['key'])
+                  parts = key.split('/')
+                  if len(parts) < 3:
+                      continue
+                  user_id = parts[1]
+                  receipt_id = os.path.splitext(parts[2])[0]
+
+                  textract_resp = textract.analyze_expense(
+                      Document={'S3Object': {'Bucket': bucket, 'Name': key}}
+                  )
+
+                  summary_fields = []
+                  try:
+                      doc = textract_resp['ExpenseDocuments'][0]
+                      for field in doc.get('SummaryFields', []):
+                          label = field.get('Type', {}).get('Text', '')
+                          value = field.get('ValueDetection', {}).get('Text', '')
+                          if label and value:
+                              summary_fields.append(f"{label}: {value}")
+                  except (IndexError, KeyError):
+                      pass
+
+                  extracted_text = "\n".join(summary_fields)
+
+                  prompt = (
+                      "Extract structured expense data from this receipt data. "
+                      "Respond with ONLY valid JSON, no other text.\n\n"
+                      f"Receipt data:\n{extracted_text}\n\n"
+                      'Return JSON in this exact format: '
+                      '{"merchant": "...", "amount": 0.00, "currency": "GBP", '
+                      '"date": "YYYY-MM-DD", "category": "one of: Travel, Meals, '
+                      'Office Supplies, Software, Utilities, Other"}'
+                  )
+
+                  bedrock_resp = bedrock.invoke_model(
+                      modelId=MODEL_ID,
+                      body=json.dumps({
+                          "anthropic_version": "bedrock-2023-05-31",
+                          "max_tokens": 300,
+                          "messages": [{"role": "user", "content": prompt}]
+                      })
+                  )
+                  result = json.loads(bedrock_resp['body'].read())
+                  content = result['content'][0]['text']
+                  try:
+                      expense_data = json.loads(content)
+                  except json.JSONDecodeError:
+                      expense_data = {
+                          "merchant": "Unknown", "amount": 0, "currency": "GBP",
+                          "date": datetime.now(timezone.utc).strftime('%Y-%m-%d'),
+                          "category": "Other"
+                      }
+
+                  expense_date = expense_data.get('date') or datetime.now(timezone.utc).strftime('%Y-%m-%d')
+
+                  table.put_item(Item={
+                      'userId': user_id,
+                      'sortKey': f"{expense_date}#{receipt_id}",
+                      'receiptId': receipt_id,
+                      'merchant': expense_data.get('merchant', 'Unknown'),
+                      'amount': str(expense_data.get('amount', 0)),
+                      'currency': expense_data.get('currency', 'GBP'),
+                      'category': expense_data.get('category', 'Other'),
+                      'expenseDate': expense_date,
+                      's3Key': key,
+                      'createdAt': datetime.now(timezone.utc).isoformat()
+                  })
+              return {'statusCode': 200}
+
+  ProcessReceiptFunctionS3Permission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ProcessReceiptFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub arn:aws:s3:::${ProjectName}-receipts-${AWS::AccountId}-${AWS::Region}
+      SourceAccount: !Ref AWS::AccountId
+
+  ListExpensesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-list-expenses
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ListExpensesRole.Arn
+      Timeout: 10
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ExpensesTable
+      Code:
+        ZipFile: |
+          import boto3, json, os
+          from boto3.dynamodb.conditions import Key
+
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+
+          def handler(event, context):
+              claims = event['requestContext']['authorizer']['jwt']['claims']
+              user_id = claims['sub']
+              qs = event.get('queryStringParameters') or {}
+              start = qs.get('start', '0000-00-00')
+              end = qs.get('end', '9999-99-99')
+
+              resp = table.query(
+                  KeyConditionExpression=Key('userId').eq(user_id) & Key('sortKey').between(start, end + '~')
+              )
+              return {
+                  'statusCode': 200,
+                  'headers': {'Content-Type': 'application/json'},
+                  'body': json.dumps(resp.get('Items', []), default=str)
+              }
+
+  GenerateReportFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-generate-report
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt GenerateReportRole.Arn
+      Timeout: 15
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ExpensesTable
+          FY_START_MONTH: !Ref FinancialYearStartMonth
+      Code:
+        ZipFile: |
+          import boto3, json, os, csv, io
+          from boto3.dynamodb.conditions import Key
+          from datetime import date
+
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+          FY_START_MONTH = int(os.environ.get('FY_START_MONTH', '4'))
+
+          def month_range(value):
+              year, month = map(int, value.split('-'))
+              start = f"{year:04d}-{month:02d}-01"
+              end = f"{year+1:04d}-01-01" if month == 12 else f"{year:04d}-{month+1:02d}-01"
+              return start, end
+
+          def financial_year_range(value):
+              fy_start_year = int(value)
+              start = f"{fy_start_year:04d}-{FY_START_MONTH:02d}-01"
+              end = f"{fy_start_year+1:04d}-{FY_START_MONTH:02d}-01"
+              return start, end
+
+          def handler(event, context):
+              claims = event['requestContext']['authorizer']['jwt']['claims']
+              user_id = claims['sub']
+              qs = event.get('queryStringParameters') or {}
+              period = qs.get('period', 'month')
+
+              if period == 'month':
+                  value = qs.get('value', date.today().strftime('%Y-%m'))
+                  start, end = month_range(value)
+                  filename = f"expenses-{value}.csv"
+              elif period == 'financial_year':
+                  value = qs.get('value', str(date.today().year))
+                  start, end = financial_year_range(value)
+                  filename = f"expenses-fy{value}.csv"
+              else:
+                  start = qs.get('start')
+                  end = qs.get('end')
+                  if not start or not end:
+                      return {'statusCode': 400, 'body': json.dumps({'error': 'start and end are required for a custom period'})}
+                  filename = f"expenses-{start}_to_{end}.csv"
+
+              resp = table.query(
+                  KeyConditionExpression=Key('userId').eq(user_id) & Key('sortKey').between(start, end)
+              )
+              items = sorted(resp.get('Items', []), key=lambda i: i['sortKey'])
+
+              buf = io.StringIO()
+              writer = csv.writer(buf)
+              writer.writerow(['Date', 'Merchant', 'Category', 'Amount', 'Currency', 'ReceiptId'])
+              total = 0.0
+              for item in items:
+                  amount = float(item.get('amount', 0))
+                  total += amount
+                  writer.writerow([item.get('expenseDate'), item.get('merchant'), item.get('category'),
+                                    f"{amount:.2f}", item.get('currency'), item.get('receiptId')])
+              writer.writerow([])
+              writer.writerow(['', '', 'TOTAL', f"{total:.2f}", '', ''])
+
+              return {
+                  'statusCode': 200,
+                  'headers': {
+                      'Content-Type': 'text/csv',
+                      'Content-Disposition': f'attachment; filename="{filename}"'
+                  },
+                  'body': buf.getvalue()
+              }
+
+Outputs:
+  ApiEndpoint:
+    Value: !GetAtt HttpApi.ApiEndpoint
+
+  CloudFrontUrl:
+    Value: !Sub https://${CloudFrontDistribution.DomainName}
+
+  FrontendBucketName:
+    Value: !Ref FrontendBucket
+
+  ReceiptsBucketName:
+    Value: !Ref ReceiptsBucket
+
+  UserPoolId:
+    Value: !Ref UserPool
+
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+
+  CognitoHostedUiDomain:
+    Value: !Sub https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
