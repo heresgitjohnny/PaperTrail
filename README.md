@@ -1,6 +1,6 @@
 # 🧾 Paper Trail
 
-A serverless, mobile-friendly receipt tracker built on AWS. Take a photo of a receipt, and it turns itself into a categorized expense, ready for a CSV report at month-end or financial year-end.
+A serverless, mobile-friendly receipt tracker built on AWS. Take a photo of a receipt (or upload any file type), and it turns itself into a categorized expense, ready for a CSV report at month-end or financial year-end.
 
 Built as part of the AWS Weekend Productivity Challenge.
 
@@ -11,22 +11,24 @@ Built as part of the AWS Weekend Productivity Challenge.
 ## What it does
 
 - **Sign in** through Cognito Hosted UI (Authorization Code + PKCE, no client secret).
-- **Upload a receipt** by camera capture on mobile or file picker on desktop.
+- **Upload a receipt**, any file type, by camera capture on mobile or file picker on desktop.
 - Behind the scenes: **Textract** extracts the raw fields from the receipt, and **Bedrock (Claude)** normalizes them into a clean merchant, amount, currency, date, and category.
-- **Browse expenses** in a running list, filtered by month or shown in total.
+- **Browse expenses** in a running list with a total.
 - **Download a CSV report** for the current month or current financial year with one tap, or a custom date range for anything else.
 
-No manual data entry, no spreadsheet wrangling.
+No manual data entry, no spreadsheet wrangling. Defaults to AUD ($), with per-receipt currency detection.
 
 ## Architecture
 
-![Architecture diagram](./docs/papertrailarchitecture.png)
+**Everything sits behind one Cognito-authenticated API.** Every route, receipt upload included, requires a valid JWT from the same Cognito User Pool.
+
+![Architecture diagram](./docs/architecture.png)
 
 ```
 User → CloudFront → S3 (static frontend)
 User → Cognito Hosted UI (login)
-User → API Gateway (JWT-authorized)
-         ├─ POST /receipts  → Lambda (ReceiptUpload)  → S3 (receipts bucket)
+User → API Gateway (JWT-authorized, single API)
+         ├─ POST /receipts → Lambda (ReceiptUpload) → S3 (receipts bucket)
          │                                                  │
          │                                     S3 ObjectCreated event
          │                                                  ▼
@@ -34,18 +36,18 @@ User → API Gateway (JWT-authorized)
          │                                       ├─ Textract AnalyzeExpense
          │                                       ├─ Bedrock InvokeModel (Claude)
          │                                       └─ DynamoDB PutItem
-         ├─ GET  /expenses  → Lambda (ListExpenses)  → DynamoDB Query
-         └─ GET  /report    → Lambda (GenerateReport) → DynamoDB Query → CSV
+         ├─ GET  /expenses → Lambda (ListExpenses)  → DynamoDB Query
+         └─ GET  /report   → Lambda (GenerateReport) → DynamoDB Query → CSV
 ```
 
 ### AWS services used
 
 | Service | Purpose |
 |---|---|
-| Amazon Cognito | User authentication (Hosted UI, JWT issuance) |
+| Amazon Cognito | User authentication (Hosted UI, JWT issuance) for the frontend and every API route |
 | Amazon S3 | Static frontend hosting + receipt storage |
 | Amazon CloudFront | HTTPS delivery of the frontend |
-| Amazon API Gateway (HTTP API) | JWT-authorized REST routes |
+| Amazon API Gateway (HTTP API) | One JWT-authorized REST API for upload, listing, and reporting |
 | AWS Lambda | Upload handling, receipt processing, expense queries, CSV generation |
 | Amazon Textract | `AnalyzeExpense` OCR extraction from the receipt image |
 | Amazon Bedrock | Claude normalizes Textract's output into structured fields |
@@ -78,10 +80,10 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
       CognitoDomainPrefix=your-unique-prefix \
-      FinancialYearStartMonth=4
+      FinancialYearStartMonth=7
 ```
 
-`CognitoDomainPrefix` must be globally unique across all AWS accounts (it becomes `https://<prefix>.auth.<region>.amazoncognito.com`). `FinancialYearStartMonth` defaults to `4` (April); set it to `1` for a calendar-year financial year, or whatever fits your locale.
+`CognitoDomainPrefix` must be globally unique across all AWS accounts (it becomes `https://<prefix>.auth.<region>.amazoncognito.com`). `FinancialYearStartMonth` defaults to `7` (July, matching the Australian financial year); set it to `4` for UK-style, or `1` for a calendar-year financial year.
 
 Grab the outputs you'll need for the frontend:
 
@@ -101,7 +103,7 @@ const CONFIG = {
   userPoolClientId: '...',       // Output: UserPoolClientId
   cognitoHostedUiDomain: '...',  // Output: CognitoHostedUiDomain
   apiEndpoint: '...',            // Output: ApiEndpoint
-  financialYearStartMonth: 4     // must match the FinancialYearStartMonth parameter above
+  financialYearStartMonth: 7     // must match the FinancialYearStartMonth parameter above
 };
 ```
 
@@ -125,21 +127,33 @@ aws cloudfront list-distributions \
 
 ## API reference
 
-All routes require `Authorization: Bearer <Cognito ID token>`.
+All routes require `Authorization: Bearer <Cognito ID token>` and are authorized by the same JWT authorizer, there is no separate or unauthenticated path for uploads.
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/receipts` | Upload a receipt. Body: `{ "filename": "...", "contentType": "image/jpeg", "fileBase64": "..." }`. Max 5MB decoded. |
-| `GET` | `/expenses?start=YYYY-MM-DD&end=YYYY-MM-DD` | List expenses in a date range. Omit both params for all-time. |
+| `POST` | `/receipts` | Upload a receipt. Body: `{ "filename": "...", "contentType": "...", "fileBase64": "..." }`. Any file type is accepted; max 5MB decoded. |
+| `GET` | `/expenses` | List all expenses for the signed-in user. Optional `?start=YYYY-MM-DD&end=YYYY-MM-DD` to filter a range. |
 | `GET` | `/report?period=month&value=YYYY-MM` | Download a CSV for a given month. |
 | `GET` | `/report?period=financial_year&value=YYYY` | Download a CSV for the financial year starting in `YYYY`. |
 | `GET` | `/report?period=custom&start=YYYY-MM-DD&end=YYYY-MM-DD` | Download a CSV for a custom range. |
 
+## How receipt processing works
+
+1. `ReceiptUploadFunction` decodes the base64 file from the request, resolves a file extension from the filename or MIME type, and writes it to `s3://<receipts-bucket>/receipts/{userId}/{receiptId}.{ext}`.
+2. That S3 write triggers `ProcessReceiptFunction`, which:
+   - Runs Textract's `AnalyzeExpense` to pull structured fields off the receipt.
+   - Sends those fields to Bedrock (Claude) with a prompt asking for merchant, amount, currency, date, and category as JSON.
+   - Recovers valid JSON from the model's response even if it's wrapped in markdown code fences or has stray text around it.
+   - Normalizes whatever date comes back into a strict `YYYY-MM-DD` format (Bedrock doesn't always follow the requested format exactly, and an inconsistent format silently breaks date-range queries).
+   - Writes the result to DynamoDB. Failures on an individual receipt are logged and isolated, they don't fail the whole batch.
+
+All of this is structured-logged to CloudWatch (`LOG_LEVEL` env var on the function, default `INFO`) for debugging.
+
 ## Known issues / TODO
 
-- The bundled `index.html` currently targets the `POST /receipts` upload API described above. If you're working from an earlier copy of this frontend that calls `GET /upload-url` and PUTs directly to S3, update it to send a JSON body to `POST /receipts` instead, that older direct-to-S3 flow is no longer part of this architecture.
 - No automated tests yet. Contributions welcome.
 - No token refresh: the Cognito ID token expires in 1 hour, at which point the app requires signing in again rather than silently refreshing.
+- The 5MB upload limit is set to stay well under the 6MB Lambda proxy-integration payload limit (base64 adds ~33% overhead on top of the raw file). Large PDFs or high-resolution photos may need client-side compression first.
 
 ## License
 
