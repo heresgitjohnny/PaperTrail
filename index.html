@@ -154,12 +154,6 @@
   .queue-item .status{color:var(--ink-muted);font-family:'Space Mono',monospace;font-size:11px;}
 
   /* ---- Expense rows ---- */
-  .period-switch{display:flex;gap:8px;margin-bottom:14px;}
-  .period-switch button{
-    flex:1;background:transparent;border:1.5px solid var(--line);border-radius:10px;
-    padding:9px;font-size:13px;font-weight:600;color:var(--ink-muted);cursor:pointer;
-  }
-  .period-switch button.active{border-color:var(--ink);color:var(--ink);background:var(--paper-card);}
   .expense-row{display:flex;align-items:baseline;gap:8px;padding:11px 0;border-bottom:1px dotted var(--line);}
   .expense-row:last-child{border-bottom:none;}
   .expense-row .date{font-family:'Space Mono',monospace;font-size:11px;color:var(--ink-muted);width:52px;flex:none;}
@@ -185,7 +179,8 @@
     font-family:'Space Mono',monospace;padding:9px;border:1.5px solid var(--line);border-radius:8px;font-size:13px;
   }
 
-  /* ---- Bottom nav ---- */
+  /* ---- Bottom nav (mobile) / Sidebar (desktop) ---- */
+  .tabbar-brand{display:none;}
   nav.tabbar{
     position:fixed;bottom:0;left:50%;transform:translateX(-50%);
     width:100%;max-width:480px;
@@ -209,8 +204,79 @@
     opacity:0;pointer-events:none;transition:opacity .25s ease, transform .25s ease;z-index:50;
   }
   #toast.show{opacity:1;transform:translateX(-50%) translateY(-4px);}
+
+  /* =========================================================================
+     DESKTOP LAYOUT - below this width the app is untouched (mobile as-is).
+     At and above this width: the app fills the browser window, the bottom
+     tab bar becomes a left sidebar, and content gets breathing room instead
+     of being squeezed into a fixed phone-width column.
+     ========================================================================= */
+  @media (min-width: 900px){
+    #shell.authed{
+      max-width:none;
+      width:100%;
+      margin:0;
+      box-shadow:none;
+      padding-left:240px;
+    }
+    #shell.authed header{
+      justify-content:flex-end;
+      border-bottom:1px solid var(--line);
+      padding:24px 40px;
+    }
+    #shell.authed header .brand{ display:none; }
+    #login-screen{ padding:40px; }
+    main{
+      padding:40px 40px 56px;
+      max-width:760px;
+      margin:0 auto;
+      width:100%;
+    }
+    .tabbar-brand{
+      display:block;
+      font-family:'Space Mono',monospace;
+      font-weight:700;
+      font-size:17px;
+      letter-spacing:0.5px;
+      padding:28px 28px 20px;
+    }
+    nav.tabbar{
+      position:fixed;
+      top:0; left:0; bottom:0;
+      transform:none;
+      width:240px; max-width:240px;
+      height:100vh;
+      flex-direction:column;
+      align-items:stretch;
+      justify-content:flex-start;
+      border-top:none;
+      border-right:1px solid var(--line);
+      padding-bottom:0;
+      gap:2px;
+    }
+    nav.tabbar button{
+      flex:none;
+      flex-direction:row;
+      justify-content:flex-start;
+      align-items:center;
+      gap:12px;
+      padding:12px 28px;
+      min-height:auto;
+    }
+    nav.tabbar button span{
+      font-size:13.5px;
+      text-transform:none;
+      letter-spacing:0.1px;
+    }
+    nav.tabbar button svg{ width:20px; height:20px; }
+    #toast{
+      left:auto; right:32px; bottom:32px; transform:none;
+    }
+    #toast.show{ transform:translateY(-4px); }
+  }
 </style>
 </head>
+
 <body>
 
 <div id="shell">
@@ -246,7 +312,7 @@
             <button class="btn btn-outline btn-block" id="choose-file-btn" type="button">Choose a file</button>
           </div>
           <input type="file" id="camera-input" accept="image/*" capture="environment">
-          <input type="file" id="file-input" accept="image/*,application/pdf">
+          <input type="file" id="file-input">
         </div>
 
         <h2 class="section-title">Recently added</h2>
@@ -260,16 +326,12 @@
       <!-- EXPENSES -->
       <section class="view" id="view-expenses">
         <h2 class="section-title">Expenses</h2>
-        <div class="period-switch">
-          <button data-period="month" class="active">This month</button>
-          <button data-period="all">All time</button>
-        </div>
         <div class="receipt-card torn">
           <div id="expense-list">
             <div class="empty-state"><span class="glyph">⏳</span>Loading…</div>
           </div>
           <div class="expense-total" id="expense-total" style="display:none;">
-            <span>Total</span><span id="expense-total-amount">£0.00</span>
+            <span>Total</span><span id="expense-total-amount">$0.00</span>
           </div>
         </div>
       </section>
@@ -298,6 +360,7 @@
     </main>
 
     <nav class="tabbar">
+      <div class="tabbar-brand">Paper Trail</div>
       <button data-tab="upload" class="active" type="button">
         <svg viewBox="0 0 24 24"><path d="M12 4v12M6 10l6-6 6 6M4 20h16" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span>Upload</span>
@@ -324,9 +387,9 @@
    ========================================================================= */
 const CONFIG = {
   userPoolClientId: 'REPLACE_ME_USER_POOL_CLIENT_ID',
-  cognitoHostedUiDomain: 'REPLACE_ME_COGNITO_HOSTED_UI_DOMAIN', // e.g. https://your-prefix.auth.eu-west-1.amazoncognito.com
-  apiEndpoint: 'REPLACE_ME_API_ENDPOINT',                       // e.g. https://abc123.execute-api.eu-west-1.amazonaws.com
-  financialYearStartMonth: 4                                    // must match the FinancialYearStartMonth stack parameter
+  cognitoHostedUiDomain: 'REPLACE_ME_COGNITO_HOSTED_UI_DOMAIN', // e.g. https://your-prefix.auth.ap-southeast-2.amazoncognito.com
+  apiEndpoint: 'REPLACE_ME_API_ENDPOINT',                       // e.g. https://abc123.execute-api.ap-southeast-2.amazonaws.com
+  financialYearStartMonth: 7                                    // must match the FinancialYearStartMonth stack parameter (7 = July, Australia)
 };
 
 function isConfigured(){
@@ -453,14 +516,27 @@ function showToast(msg){
 }
 function fmtMoney(n, currency){
   const num = Number(n || 0);
-  const symbol = currency === 'USD' ? '$' : currency === 'EUR' ? '€' : '£';
+  const symbol = currency === 'GBP' ? '£' : currency === 'EUR' ? '€' : '$';
   return symbol + num.toFixed(2);
 }
-function extFromMime(mime){
-  if (mime === 'image/png') return 'png';
-  if (mime === 'image/jpeg') return 'jpg';
-  if (mime === 'application/pdf') return 'pdf';
-  return 'jpg';
+
+const MIME_TO_EXT = {
+  'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp',
+  'image/heic': 'heic', 'image/heif': 'heif', 'image/bmp': 'bmp', 'image/tiff': 'tiff',
+  'application/pdf': 'pdf',
+  'text/csv': 'csv', 'text/plain': 'txt',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.ms-excel': 'xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx'
+};
+function resolveExtension(file){
+  const nameExt = (file.name || '').split('.').pop();
+  if (nameExt && nameExt !== file.name && /^[a-z0-9]{1,8}$/i.test(nameExt)) {
+    return nameExt.toLowerCase();
+  }
+  if (file.type && MIME_TO_EXT[file.type]) return MIME_TO_EXT[file.type];
+  return 'dat';
 }
 function fileToBase64(file){
   return new Promise((resolve, reject) => {
@@ -496,9 +572,9 @@ function addQueueItem(name){
 
 async function uploadFile(file){
   if (file.size > 5 * 1024 * 1024) { showToast('That file is too large (max 5MB).'); return; }
-  const row = addQueueItem(file.name);
+  const row = addQueueItem(file.name || 'receipt');
   try {
-    const ext = extFromMime(file.type);
+    const ext = resolveExtension(file);
     const filename = file.name || `receipt.${ext}`;
     const fileBase64 = await fileToBase64(file);
 
@@ -506,7 +582,7 @@ async function uploadFile(file){
       method: 'POST',
       body: {
         filename,
-        contentType: file.type || 'image/jpeg',
+        contentType: file.type || 'application/octet-stream',
         fileBase64
       }
     });
@@ -536,29 +612,13 @@ document.getElementById('choose-file-btn').addEventListener('click', () => docum
 });
 
 /* ----------------------------- Expenses ---------------------------------- */
-let currentPeriod = 'month';
-
-function monthRange(){
-  const now = new Date();
-  const y = now.getFullYear(), m = now.getMonth();
-  const start = `${y}-${String(m+1).padStart(2,'0')}-01`;
-  const nextY = m === 11 ? y+1 : y, nextM = m === 11 ? 1 : m+2;
-  const end = `${nextY}-${String(nextM).padStart(2,'0')}-01`;
-  return { start, end };
-}
-
 async function loadExpenses(){
   const listEl = document.getElementById('expense-list');
   const totalEl = document.getElementById('expense-total');
   listEl.innerHTML = '<div class="empty-state"><span class="glyph">⏳</span>Loading…</div>';
   totalEl.style.display = 'none';
 
-  let query = '';
-  if (currentPeriod === 'month') {
-    const { start, end } = monthRange();
-    query = `?start=${start}&end=${end}`;
-  }
-  const resp = await apiFetch('/expenses' + query);
+  const resp = await apiFetch('/expenses');
   if (!resp || !resp.ok) { listEl.innerHTML = '<div class="empty-state">Could not load expenses.</div>'; return; }
   const items = await resp.json();
 
@@ -568,7 +628,7 @@ async function loadExpenses(){
   }
 
   items.sort((a,b) => (b.sortKey || '').localeCompare(a.sortKey || ''));
-  let total = 0, currency = 'GBP';
+  let total = 0, currency = 'AUD';
   listEl.innerHTML = items.map(it => {
     total += Number(it.amount || 0);
     currency = it.currency || currency;
@@ -584,15 +644,6 @@ async function loadExpenses(){
   document.getElementById('expense-total-amount').textContent = fmtMoney(total, currency);
   totalEl.style.display = 'flex';
 }
-
-document.querySelectorAll('.period-switch button').forEach(b => {
-  b.addEventListener('click', () => {
-    document.querySelectorAll('.period-switch button').forEach(x => x.classList.remove('active'));
-    b.classList.add('active');
-    currentPeriod = b.dataset.period;
-    loadExpenses();
-  });
-});
 
 /* ------------------------------ Reports ----------------------------------- */
 async function downloadReport(query){
@@ -644,6 +695,7 @@ async function boot(){
   }
   await handleCallbackIfPresent();
   const authed = !!getTokens();
+  document.getElementById('shell').classList.toggle('authed', authed);
   document.getElementById('login-screen').style.display = authed ? 'none' : 'flex';
   document.getElementById('app-shell').style.display = authed ? 'flex' : 'none';
   document.getElementById('signout').style.display = authed ? 'inline-block' : 'none';
