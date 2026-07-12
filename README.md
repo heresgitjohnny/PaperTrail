@@ -69,7 +69,7 @@ All infrastructure is defined in a single CloudFormation template, no servers to
 ## Prerequisites
 
 - An AWS account with the AWS CLI configured
-- [Model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) enabled in the Bedrock console for the model you'll use (default: `anthropic.claude-3-5-sonnet-20241022-v2:0`)
+- [Model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) enabled in the Bedrock console for the model, it has been tested with au.anthropic.claude-sonnet-4-6 but you'd need to make sure you ware using the right model code for your region.
 
 ## Deploy
 
